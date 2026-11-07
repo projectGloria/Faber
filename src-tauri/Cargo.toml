@@ -1,0 +1,37 @@
+[package]
+name = "faber"
+version = "0.1.0"
+description = "Faber: detect a project's stack and build it in one click"
+authors = ["Nihil"]
+edition = "2024"
+
+[lib]
+# `_lib` suffix avoids a bin/lib name clash on Windows (cargo#8519).
+name = "faber_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-store = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "time"] }
+glob = "0.3"
+which = "8"
+dunce = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
