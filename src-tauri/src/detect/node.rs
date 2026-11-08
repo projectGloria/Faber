@@ -44,12 +44,12 @@ impl PackageManager {
         }
     }
 
-    fn lockfile(self) -> &'static str {
+    fn lockfile(self, ctx: &Ctx) -> &'static str {
         match self {
             Self::Npm => "package-lock.json",
             Self::Pnpm => "pnpm-lock.yaml",
             Self::Yarn => "yarn.lock",
-            Self::Bun => "bun.lock",
+            Self::Bun => if ctx.has("bun.lockb") { "bun.lockb" } else { "bun.lock" },
         }
     }
 
@@ -109,8 +109,9 @@ pub fn install_step(ctx: &Ctx, pm: PackageManager) -> Option<Step> {
     } else {
         let marker = ctx.mtime(pm.install_marker());
         let newer = |rel: &str| matches!((ctx.mtime(rel), marker), (Some(f), Some(m)) if f > m);
-        if newer(pm.lockfile()) {
-            format!("{} changed since the last install", pm.lockfile())
+        let lockfile = pm.lockfile(ctx);
+        if newer(lockfile) {
+            format!("{lockfile} changed since the last install")
         } else if newer("package.json") {
             "package.json changed since the last install".to_string()
         } else {

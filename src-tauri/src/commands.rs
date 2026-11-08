@@ -27,11 +27,13 @@ pub async fn detect_project(path: String, options: Options) -> Result<Detection,
 #[tauri::command]
 pub async fn run_build(path: String, options: Options, state: State<'_, RunState>, on_event: Channel<RunEvent>) -> Result<(), String> {
     let root = root(&path)?;
+    // Grab the busy guard up front: a Build click while already running is rejected before scanning.
+    let _busy = state.begin()?;
     let detection = tauri::async_runtime::spawn_blocking(move || detect::detect(&root, options)).await.map_err(|e| e.to_string())?;
     if detection.plan.steps.is_empty() {
         return Err("Nothing to build here.".into());
     }
-    runner::run(detection, &state, on_event).await
+    runner::run_with_guard(detection, &state, _busy, on_event).await
 }
 
 /// async: taskkill takes ~100ms and sync commands run on the main thread.

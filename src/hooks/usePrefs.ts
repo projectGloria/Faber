@@ -41,7 +41,7 @@ export function usePrefs() {
   }, []);
 
   const removeRecent = useCallback((path: string) => {
-    setRecents((prev) => prev.filter((p) => p !== path));
+    setRecents((prev) => prev.filter((p) => p.toLowerCase() !== path.toLowerCase()));
   }, []);
 
   const setOptionsFor = useCallback((path: string, opts: Options) => {

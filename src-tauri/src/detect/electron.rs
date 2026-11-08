@@ -44,7 +44,9 @@ pub fn detect(ctx: &Ctx) -> Option<Detected> {
         Some((name, body)) => {
             let last = body.split("&&").last().unwrap_or("").trim();
             let tokens: Vec<&str> = last.split_whitespace().collect();
-            let last_is_builder = tokens.first() == Some(&"electron-builder");
+            let last_is_builder = tokens.first() == Some(&"electron-builder")
+                || (matches!(tokens.first(), Some(&"npx" | &"pnpm" | &"yarn" | &"bunx"))
+                    && tokens.get(1) == Some(&"electron-builder"));
             let pins = tokens.iter().skip(1).any(|t| TARGET_WORDS.contains(t));
             let ends_with_win = matches!(tokens.last(), Some(&("--win" | "-w" | "--windows")));
             let has_win = tokens.iter().any(|t| matches!(*t, "--win" | "-w" | "--windows"));

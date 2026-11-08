@@ -86,5 +86,10 @@ pub fn command_for(program: &str) -> Option<(PathBuf, Vec<String>)> {
             return Some((npx, vec!["--yes".into(), program.to_string()]));
         }
     }
+    if program == "python" {
+        if let Some(py) = resolve("py") {
+            return Some((py, vec!["-3".into()]));
+        }
+    }
     None
 }

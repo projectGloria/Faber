@@ -5,7 +5,7 @@ const win = getCurrentWindow();
 /** Frameless window chrome: the bar itself is the drag handle; buttons opt out by not carrying the attribute. */
 export function TitleBar({ children }: { children?: React.ReactNode }) {
   return (
-    <header className="titlebar" data-tauri-drag-region>
+    <header className="titlebar" data-tauri-drag-region onDoubleClick={() => win.toggleMaximize()}>
       <div className="brand" data-tauri-drag-region>
         <span className="brand-mark">F</span>
         <span className="brand-name" data-tauri-drag-region>Faber</span>

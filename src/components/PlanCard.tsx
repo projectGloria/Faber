@@ -131,7 +131,11 @@ function Toggle({ label, on, disabled, onChange }: { label: string; on: boolean;
  */
 function ExtraArgs({ value, disabled, onCommit }: { value: string; disabled?: boolean; onCommit: (v: string) => void }) {
   const [draft, setDraft] = useState(value);
-  const commit = () => draft !== value && onCommit(draft.trim());
+  const commit = () => {
+    const trimmed = draft.trim();
+    setDraft(trimmed);
+    if (trimmed !== value) onCommit(trimmed);
+  };
   return (
     <label className="field">
       <span>Extra args for the build step</span>

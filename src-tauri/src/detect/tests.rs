@@ -214,6 +214,52 @@ fn extra_args_go_to_last_build_step() {
 }
 
 #[test]
+fn extra_args_preserve_quoted_strings() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "Cargo.toml", "[package]\nname = \"x\"\n");
+    let d = detect(t.path(), Options { extra_args: "--features \"fast simd\" --target x86_64".into(), ..opts() });
+    assert_eq!(commands(&d), vec!["cargo build --release --features \"fast simd\" --target x86_64"]);
+}
+
+#[test]
+fn cargo_package_name_handles_comments_quotes_and_prefix_keys() {
+    let toml = r#"
+[package]
+namespace = "my-scope"
+name = "my-crate" # inline comment
+version = "0.1.0"
+"#;
+    assert_eq!(cargo::package_name(toml), Some("my-crate".into()));
+
+    let toml_single = "[package]\nname = 'single-quoted'\n";
+    assert_eq!(cargo::package_name(toml_single), Some("single-quoted".into()));
+}
+
+#[test]
+fn dotnet_subfolder_project_keeps_relative_path() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "src/App/App.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Dotnet));
+    let c = commands(&d);
+    assert_eq!(c[0], "dotnet restore src/App/App.csproj");
+    assert!(c[1].starts_with("dotnet publish src/App/App.csproj -c Release"));
+}
+
+#[test]
+fn bun_lockb_triggers_install_on_change() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "node_modules", "");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    write(t.path(), "package.json", r#"{"scripts":{"build":"bun run src/index.ts"}}"#);
+    write(t.path(), "bun.lockb", "binary-lock-data");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.package_manager, Some(PackageManager::Bun));
+    assert_eq!(commands(&d)[0], "bun install");
+    assert!(d.plan.steps[0].reason.as_deref().unwrap().contains("bun.lockb changed"));
+}
+
+#[test]
 fn empty_folder_reports_error() {
     let t = tempfile::tempdir().unwrap();
     let d = detect(t.path(), opts());

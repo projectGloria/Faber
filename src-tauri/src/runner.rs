@@ -90,9 +90,13 @@ impl Drop for RunGuard<'_> {
     }
 }
 
+#[allow(dead_code)]
 pub async fn run(detection: Detection, state: &RunState, ch: Channel<RunEvent>) -> Result<(), String> {
-    let _guard = state.begin()?;
+    let guard = state.begin()?;
+    run_with_guard(detection, state, guard, ch).await
+}
 
+pub async fn run_with_guard(detection: Detection, state: &RunState, _guard: RunGuard<'_>, ch: Channel<RunEvent>) -> Result<(), String> {
     let root = PathBuf::from(&detection.root);
     let plan = detection.plan.clone();
     let _ = ch.send(RunEvent::Plan { detection });
@@ -181,11 +185,14 @@ async fn exec(
 
     // A daemon the build spawned (turbo, gradle...) can inherit our pipe handles and keep them open
     // forever after the main process exits, so give the readers a short grace period then move on.
-    for h in [out, err] {
-        let abort = h.abort_handle();
-        if tokio::time::timeout(Duration::from_secs(2), h).await.is_err() {
-            abort.abort();
-        }
+    let abort_out = out.abort_handle();
+    let abort_err = err.abort_handle();
+    let readers = async {
+        let _ = tokio::join!(out, err);
+    };
+    if tokio::time::timeout(Duration::from_secs(2), readers).await.is_err() {
+        abort_out.abort();
+        abort_err.abort();
     }
     Ok(status.code())
 }
@@ -250,7 +257,7 @@ fn dir_size(p: &Path, budget: &mut u32) -> u64 {
             break;
         }
         match e.file_type() {
-            Ok(t) if t.is_dir() => total += dir_size(&e.path(), budget),
+            Ok(t) if t.is_dir() && !t.is_symlink() => total += dir_size(&e.path(), budget),
             Ok(_) => total += e.metadata().map(|m| m.len()).unwrap_or(0),
             Err(_) => {}
         }

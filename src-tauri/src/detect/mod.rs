@@ -191,6 +191,36 @@ pub fn glob_in(root: &Path, pat: &str) -> Vec<PathBuf> {
     glob::glob_with(&full, opts).map(|it| it.filter_map(Result::ok).collect()).unwrap_or_default()
 }
 
+/// Quote-aware argument splitter that preserves strings wrapped in single or double quotes.
+pub fn split_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut quote_char = ' ';
+
+    for c in input.chars() {
+        match c {
+            '"' | '\'' if !in_quotes => {
+                in_quotes = true;
+                quote_char = c;
+            }
+            c if in_quotes && c == quote_char => {
+                in_quotes = false;
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
 pub fn detect(root: &Path, opts: Options) -> Detection {
     let ctx = Ctx::new(root, opts);
     let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -242,7 +272,7 @@ pub fn detect(root: &Path, opts: Options) -> Detection {
                         StepKind::Package,
                         "Inno Setup installer",
                         iscc.to_string_lossy(),
-                        vec![iss.to_string_lossy().into_owned()],
+                        vec![crate::clean::rel(root, &iss)],
                     ));
                     primary.artifacts.push("Output/*.exe".into());
                 }
@@ -252,7 +282,7 @@ pub fn detect(root: &Path, opts: Options) -> Detection {
     }
 
     // Extra args go to the last real build/package command, the one that matters.
-    let extra: Vec<String> = ctx.opts.extra_args.split_whitespace().map(String::from).collect();
+    let extra = split_args(&ctx.opts.extra_args);
     if !extra.is_empty() {
         if let Some(step) = primary
             .steps
@@ -264,7 +294,8 @@ pub fn detect(root: &Path, opts: Options) -> Detection {
         }
     }
 
-    primary.tools.dedup();
+    let mut seen_tools = std::collections::HashSet::new();
+    primary.tools.retain(|t| seen_tools.insert(t.clone()));
     for tool in &primary.tools {
         match toolchain::command_for(tool) {
             None => primary.notes.push(Note::error(format!("`{tool}` isn't on PATH, so the build will fail until it's installed."))),

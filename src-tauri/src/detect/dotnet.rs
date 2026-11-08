@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 pub fn detect(ctx: &Ctx) -> Option<Detected> {
     let slns: Vec<PathBuf> = [ctx.glob("*.sln"), ctx.glob("*.slnx")].concat();
-    let csprojs = ctx.glob("*.csproj");
-    let vcx: Vec<PathBuf> = [ctx.glob("*.vcxproj"), ctx.glob("*/*.vcxproj")].concat();
+    let csprojs: Vec<PathBuf> = [ctx.glob("*.csproj"), ctx.glob("*/*.csproj"), ctx.glob("*/*/*.csproj")].concat();
+    let vcx: Vec<PathBuf> = [ctx.glob("*.vcxproj"), ctx.glob("*/*.vcxproj"), ctx.glob("*/*/*.vcxproj")].concat();
     if slns.is_empty() && csprojs.is_empty() && vcx.is_empty() {
         return None;
     }
@@ -18,7 +18,7 @@ pub fn detect(ctx: &Ctx) -> Option<Detected> {
     let sdk_style = |p: &PathBuf| std::fs::read_to_string(p).is_ok_and(|s| s.contains("<Project Sdk="));
     let needs_msbuild = !vcx.is_empty() || (!csprojs.is_empty() && !csprojs.iter().all(sdk_style));
 
-    let rel = |p: &PathBuf| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let rel = |p: &PathBuf| crate::clean::rel(&ctx.root, p);
 
     if needs_msbuild {
         let mut d = Detected::new(Stack::Msbuild, 60);
@@ -43,10 +43,11 @@ pub fn detect(ctx: &Ctx) -> Option<Detected> {
     // One csproj, so publish it directly; otherwise let the solution decide.
     let target = if csprojs.len() == 1 { rel(&csprojs[0]) } else { slns.first().map(rel).unwrap_or_else(|| rel(&csprojs[0])) };
 
-    if !ctx.opts.skip_install && (ctx.opts.force_install || !ctx.has("obj/project.assets.json")) {
+    let has_assets = ctx.has("obj/project.assets.json") || !ctx.glob("*/obj/project.assets.json").is_empty();
+    if !ctx.opts.skip_install && (ctx.opts.force_install || !has_assets) {
         d.steps.push(
             Step::exec(StepKind::Install, "dotnet restore", "dotnet", vec!["restore".into(), target.clone()])
-                .reason("NuGet packages aren't restored yet (obj/project.assets.json missing)"),
+                .reason("NuGet packages aren't restored yet (project.assets.json missing)"),
         );
     }
     // Framework-dependent single file: small exe, uses the runtime already on this machine.

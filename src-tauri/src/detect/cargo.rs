@@ -41,9 +41,11 @@ pub fn package_name(toml: &str) -> Option<String> {
             continue;
         }
         if in_pkg {
-            if let Some(rest) = line.strip_prefix("name") {
-                let v = rest.trim_start().strip_prefix('=')?.trim().trim_matches('"');
-                return Some(v.to_string());
+            if let Some((k, v)) = line.split_once('=') {
+                if k.trim() == "name" {
+                    let val = v.split('#').next().unwrap_or("").trim().trim_matches(|c| c == '"' || c == '\'');
+                    return Some(val.to_string());
+                }
             }
         }
     }
