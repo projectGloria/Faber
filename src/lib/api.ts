@@ -2,7 +2,22 @@
 // (camelCase fields, `type`-tagged enums), so keep both sides in sync when changing one.
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-export type Stack = "tauri" | "electron" | "node" | "cargo" | "dotnet" | "msbuild" | "python" | "script";
+export type Stack =
+  | "tauri"
+  | "electron"
+  | "flutter"
+  | "dart"
+  | "gradle"
+  | "go"
+  | "cmake"
+  | "zig"
+  | "extension"
+  | "node"
+  | "cargo"
+  | "dotnet"
+  | "msbuild"
+  | "python"
+  | "script";
 export type StepKind = "install" | "build" | "package";
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
@@ -84,6 +99,13 @@ export const cleanProject = (path: string, options: Options) =>
 export const STACK_LABEL: Record<Stack, string> = {
   tauri: "Tauri",
   electron: "Electron",
+  flutter: "Flutter",
+  dart: "Dart",
+  gradle: "Gradle",
+  go: "Go",
+  cmake: "CMake",
+  zig: "Zig",
+  extension: "Extension",
   node: "Node",
   cargo: "Cargo",
   dotnet: ".NET",

@@ -20,7 +20,10 @@ pub enum Action {
     Exec {
         program: String,
         args: Vec<String>,
+        #[serde(default)]
         env: Vec<(String, String)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
 }
 
@@ -46,8 +49,14 @@ impl Step {
             label: label.into(),
             command: display_command(&program, &args),
             reason: None,
-            action: Action::Exec { program, args, env: Vec::new() },
+            action: Action::Exec { program, args, env: Vec::new(), cwd: None },
         }
+    }
+
+    pub fn with_cwd(mut self, cwd: impl Into<String>) -> Self {
+        let Action::Exec { cwd: c, .. } = &mut self.action;
+        *c = Some(cwd.into());
+        self
     }
 
     pub fn reason(mut self, reason: impl Into<String>) -> Self {

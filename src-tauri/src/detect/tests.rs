@@ -1,6 +1,7 @@
 //! Detector tests against throwaway project folders shaped like the real repos.
 
 use super::*;
+use crate::plan::Action;
 use std::fs;
 use std::path::Path;
 
@@ -265,6 +266,158 @@ fn empty_folder_reports_error() {
     let d = detect(t.path(), opts());
     assert_eq!(d.stack, None);
     assert_eq!(d.notes[0].level, Level::Error);
+}
+
+#[test]
+fn flutter_desktop_windows_project() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "pubspec.yaml", "name: gallery\ndependencies:\n  flutter:\n    sdk: flutter\n");
+    write(t.path(), "windows/runner/main.cpp", "");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Flutter));
+    assert!(d.tags.contains(&"Flutter".to_string()));
+    assert!(d.tags.contains(&"Windows".to_string()));
+    let c = commands(&d);
+    assert_eq!(c[0], "flutter pub get");
+    assert_eq!(c[1], "flutter build windows --release");
+    assert!(d.plan.artifacts.contains(&"build/windows/x64/runner/Release/*.exe".to_string()));
+    assert!(d.plan.clean.contains(&"build".to_string()));
+}
+
+#[test]
+fn flutter_android_mobile_project() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "pubspec.yaml", "name: my_mobile_app\ndependencies:\n  flutter:\n    sdk: flutter\n");
+    write(t.path(), "android/app/build.gradle", "");
+    write(t.path(), ".dart_tool/package_config.json", "");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Flutter));
+    assert!(d.tags.contains(&"Android".to_string()));
+    let c = commands(&d);
+    assert_eq!(c[0], "flutter build apk --release");
+    assert!(d.plan.artifacts.contains(&"build/app/outputs/flutter-apk/*.apk".to_string()));
+}
+
+#[test]
+fn dart_standalone_cli() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "pubspec.yaml", "name: my_cli\ndev_dependencies:\n  test: ^1.24.0\n");
+    write(t.path(), ".dart_tool/package_config.json", "");
+    write(t.path(), "bin/my_cli.dart", "void main() {}");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Dart));
+    assert!(d.tags.contains(&"Dart".to_string()));
+    let c = commands(&d);
+    assert_eq!(c[0], "dart compile exe bin/my_cli.dart -o bin/my_cli.exe");
+    assert!(d.plan.artifacts.contains(&"bin/my_cli.exe".to_string()));
+}
+
+#[test]
+fn gradle_android_app() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "build.gradle.kts", "plugins { id(\"com.android.application\") }\n");
+    write(t.path(), "gradlew.bat", "@echo off\r\n");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Gradle));
+    assert!(d.tags.contains(&"Android".to_string()));
+    assert!(d.tags.contains(&"Gradle".to_string()));
+    let c = commands(&d);
+    assert_eq!(c[0], "cmd /C .\\gradlew.bat assembleRelease");
+    assert!(d.plan.artifacts.contains(&"app/build/outputs/apk/release/*.apk".to_string()));
+}
+
+#[test]
+fn go_module_app() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "go.mod", "module github.com/user/my-microservice\r\ngo 1.22\r\n");
+    write(t.path(), "go.sum", "");
+    write(t.path(), "main.go", "package main\nfunc main() {}\n");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Go));
+    assert!(d.tags.contains(&"Go".to_string()));
+    let c = commands(&d);
+    assert_eq!(c[0], "go build -ldflags \"-s -w\" -o my-microservice.exe .");
+    assert!(d.plan.artifacts.contains(&"my-microservice.exe".to_string()));
+}
+
+#[test]
+fn cmake_native_project() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "CMakeLists.txt", "project(MyGame)\n");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Cmake));
+    assert!(d.tags.contains(&"CMake".to_string()));
+    let c = commands(&d);
+    assert_eq!(c[0], "cmake -B build -DCMAKE_BUILD_TYPE=Release");
+    assert_eq!(c[1], "cmake --build build --config Release");
+    assert!(d.plan.artifacts.contains(&"build/Release/*.exe".to_string()));
+}
+
+#[test]
+fn zig_project() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "build.zig", "const std = @import(\"std\");");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Zig));
+    assert!(d.tags.contains(&"Zig".to_string()));
+    let c = commands(&d);
+    assert_eq!(c[0], "zig build -Doptimize=ReleaseSafe");
+    assert!(d.plan.artifacts.contains(&"zig-out/bin/*.exe".to_string()));
+}
+
+#[test]
+fn vscode_extension_with_custom_package_script() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "package.json", r#"{"name":"my-ext","engines":{"vscode":"^1.80.0"},"scripts":{"package":"node pack.js"}}"#);
+    write(t.path(), "package-lock.json", "{}");
+    write(t.path(), "node_modules/.package-lock.json", "{}");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Extension));
+    assert!(d.tags.contains(&"VS Code Extension".to_string()));
+    let c = commands(&d);
+    assert_eq!(c[0], "npm run package");
+    assert!(d.plan.artifacts.contains(&"*.vsix".to_string()));
+}
+
+#[test]
+fn webextension_manifest_detection() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "manifest.json", r#"{"manifest_version": 3, "name": "AdShield"}"#);
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Extension));
+    assert!(d.tags.contains(&"WebExtension".to_string()));
+    assert!(d.plan.artifacts.contains(&"*.zip".to_string()));
+}
+
+#[test]
+fn nested_tauri_in_monorepo() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "Cargo.toml", "[workspace]\nmembers = [\"app/src-tauri\"]\n");
+    write(t.path(), "app/package.json", r#"{"scripts":{"tauri":"tauri"},"devDependencies":{"@tauri-apps/cli":"^2"}}"#);
+    write(t.path(), "app/package-lock.json", "{}");
+    write(t.path(), "app/node_modules/.package-lock.json", "{}");
+    write(t.path(), "app/src-tauri/tauri.conf.json", r#"{"productName":"SubApp"}"#);
+    write(t.path(), "app/src-tauri/Cargo.toml", "[package]\nname = \"sub-app\"\n");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Tauri));
+    let c = commands(&d);
+    assert_eq!(c[0], "npm run tauri -- build --bundles nsis,msi");
+    assert_eq!(d.plan.steps[0].action, Action::Exec {
+        program: "npm".to_string(),
+        args: vec!["run".into(), "tauri".into(), "--".into(), "build".into(), "--bundles".into(), "nsis,msi".into()],
+        env: vec![],
+        cwd: Some("app".to_string()),
+    });
+}
+
+#[test]
+fn script_in_subfolder_with_variations() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "installer/build.ps1", "# powershell script");
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Script));
+    let c = commands(&d);
+    assert!(c[0].starts_with("powershell -NoProfile -ExecutionPolicy Bypass -File installer\\build.ps1"));
 }
 
 /// Dry run over the real projects next to Faber: `cargo test real_projects -- --ignored --nocapture`.

@@ -108,8 +108,8 @@ pub async fn run_with_guard(detection: Detection, state: &RunState, _guard: RunG
     for step in &plan.steps {
         let _ = ch.send(RunEvent::StepStarted { id: step.id.clone(), command: step.command.clone() });
         let t0 = Instant::now();
-        let Action::Exec { program, args, env } = &step.action;
-        let result = exec(&root, &step.id, program, args, env, state, &ch).await;
+        let Action::Exec { program, args, env, cwd } = &step.action;
+        let result = exec(&root, &step.id, program, args, env, cwd.as_deref(), state, &ch).await;
         let ms = t0.elapsed().as_millis() as u64;
         let (ok, code, error) = match result {
             Ok(code) => (code == Some(0), code, None),
@@ -143,14 +143,19 @@ async fn exec(
     program: &str,
     args: &[String],
     env: &[(String, String)],
+    cwd: Option<&str>,
     state: &RunState,
     ch: &Channel<RunEvent>,
 ) -> Result<Option<i32>, String> {
     let (resolved, prefix) = toolchain::command_for(program).ok_or_else(|| format!("`{program}` not found on PATH"))?;
+    let work_dir = match cwd {
+        Some(rel) => root.join(rel),
+        None => root.to_path_buf(),
+    };
     let mut cmd = Command::new(&resolved);
     cmd.args(&prefix)
         .args(args)
-        .current_dir(root)
+        .current_dir(&work_dir)
         .envs(env.iter().map(|(k, v)| (k, v)))
         // Pipes aren't TTYs, so most tools would drop colour; these force it back on and xterm renders the ANSI.
         .env("FORCE_COLOR", "1")

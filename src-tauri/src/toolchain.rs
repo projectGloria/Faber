@@ -52,6 +52,12 @@ pub fn iscc() -> Option<PathBuf> {
     if let Ok(p) = which::which("iscc") {
         return Some(p);
     }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let p = PathBuf::from(local).join(r"Programs\Inno Setup 6\ISCC.exe");
+        if p.exists() {
+            return Some(p);
+        }
+    }
     ["ProgramFiles(x86)", "ProgramFiles"]
         .iter()
         .filter_map(|v| std::env::var(v).ok())

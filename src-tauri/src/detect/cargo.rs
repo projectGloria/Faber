@@ -5,7 +5,11 @@ use crate::plan::{Step, StepKind, sv};
 use crate::toolchain;
 
 pub fn detect(ctx: &Ctx) -> Option<Detected> {
-    if !ctx.has("Cargo.toml") || ctx.has("src-tauri") {
+    let has_tauri = ctx.has("src-tauri")
+        || ctx.has("app/src-tauri")
+        || ctx.has("desktop/src-tauri")
+        || ctx.has("client/src-tauri");
+    if !ctx.has("Cargo.toml") || has_tauri {
         return None;
     }
     let mut d = Detected::new(Stack::Cargo, 55);

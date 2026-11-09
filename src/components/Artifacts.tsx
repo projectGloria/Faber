@@ -29,5 +29,7 @@ function kindIcon(name: string) {
   const n = name.toLowerCase();
   if (n.endsWith(".msi") || n.includes("setup")) return "⬇";
   if (n.endsWith(".exe")) return "▶";
+  if (n.endsWith(".apk") || n.endsWith(".aab")) return "📱";
+  if (n.endsWith(".vsix") || n.endsWith(".zip")) return "📦";
   return "◆";
 }

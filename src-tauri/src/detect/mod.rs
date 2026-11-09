@@ -5,14 +5,20 @@
 //! Everything here is plain filesystem reads, so it's unit-testable against temp dirs.
 
 mod cargo;
+mod cmake;
 mod dotnet;
 mod electron;
+mod extension;
+mod flutter;
+mod go_lang;
+mod gradle;
 mod node;
 mod python;
 mod script;
 mod tauri_app;
 #[cfg(test)]
 mod tests;
+mod zig;
 
 pub use node::PackageManager;
 
@@ -28,6 +34,13 @@ use std::time::SystemTime;
 pub enum Stack {
     Tauri,
     Electron,
+    Flutter,
+    Dart,
+    Gradle,
+    Go,
+    Cmake,
+    Zig,
+    Extension,
     Node,
     Cargo,
     Dotnet,
@@ -228,10 +241,16 @@ pub fn detect(root: &Path, opts: Options) -> Detection {
     let mut found: Vec<Detected> = [
         tauri_app::detect,
         electron::detect,
+        flutter::detect,
+        extension::detect,
         script::detect,
+        gradle::detect,
         dotnet::detect,
         cargo::detect,
+        zig::detect,
+        go_lang::detect,
         python::detect,
+        cmake::detect,
         node::detect,
     ]
     .iter()
@@ -248,7 +267,7 @@ pub fn detect(root: &Path, opts: Options) -> Detection {
             tags: vec![],
             package_manager: None,
             plan: BuildPlan::default(),
-            notes: vec![Note::error("No buildable project found here (looked for package.json, src-tauri, Cargo.toml, *.csproj/*.sln, Python files, build scripts).")],
+            notes: vec![Note::error("No buildable project found here (looked for package.json, src-tauri, pubspec.yaml, Gradle, Cargo.toml, *.csproj/*.sln, Go, CMake, Zig, Python, build scripts).")],
             alternatives: vec![],
             cleanable: vec![],
         };
@@ -260,21 +279,44 @@ pub fn detect(root: &Path, opts: Options) -> Detection {
 
     // Inno Setup script = a hand-made installer; honour it for stacks that don't bundle their own.
     let bundles_itself = matches!(primary.stack, Stack::Tauri | Stack::Electron);
-    if !bundles_itself && !ctx.glob("*.iss").is_empty() {
-        // ISCC's default OutputDir. Cleanable even with the installer toggle off: old setups still sit there.
+    let iss_files: Vec<PathBuf> = ["*.iss", "installer/*.iss", "install/*.iss", "setup/*.iss"]
+        .iter()
+        .flat_map(|p| ctx.glob(p))
+        .collect();
+    if !bundles_itself && !iss_files.is_empty() {
         primary.clean.push("Output".into());
+        primary.clean.push("dist".into());
     }
     if ctx.opts.installer && !bundles_itself {
-        if let Some(iss) = ctx.glob("*.iss").into_iter().next() {
+        if let Some(iss) = iss_files.first() {
             match toolchain::iscc() {
                 Some(iscc) => {
+                    let iss_rel = crate::clean::rel(root, iss);
+                    let mut iscc_args = vec![iss_rel.clone()];
+                    if let Some(text) = ctx.read(&iss_rel) {
+                        if text.contains("#ifndef AppVersion") || text.contains("{#AppVersion}") {
+                            let ver = ctx.read("Cargo.toml")
+                                .and_then(|t| {
+                                    t.lines().find(|l| l.trim().starts_with("version =") || l.trim().starts_with("version="))
+                                        .and_then(|l| l.split('"').nth(1))
+                                        .map(String::from)
+                                })
+                                .or_else(|| {
+                                    ctx.pkg.as_ref().and_then(|p| p.get("version")).and_then(|v| v.as_str()).map(String::from)
+                                });
+                            if let Some(v) = ver {
+                                iscc_args.insert(0, format!("/DAppVersion={v}"));
+                            }
+                        }
+                    }
                     primary.steps.push(Step::exec(
                         StepKind::Package,
                         "Inno Setup installer",
                         iscc.to_string_lossy(),
-                        vec![crate::clean::rel(root, &iss)],
+                        iscc_args,
                     ));
                     primary.artifacts.push("Output/*.exe".into());
+                    primary.artifacts.push("dist/*.exe".into());
                 }
                 None => primary.notes.push(Note::warn("Found an .iss installer script but ISCC (Inno Setup 6) isn't installed.")),
             }
