@@ -204,6 +204,11 @@ pub fn glob_in(root: &Path, pat: &str) -> Vec<PathBuf> {
     glob::glob_with(&full, opts).map(|it| it.filter_map(Result::ok).collect()).unwrap_or_default()
 }
 
+/// Check for unsafe shell control characters that can lead to command chaining/injection.
+pub fn contains_shell_metachars(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, '&' | '|' | ';' | '^' | '%' | '<' | '>' | '\n' | '\r'))
+}
+
 /// Quote-aware argument splitter that preserves strings wrapped in single or double quotes.
 pub fn split_args(input: &str) -> Vec<String> {
     let mut args = Vec::new();
@@ -323,16 +328,30 @@ pub fn detect(root: &Path, opts: Options) -> Detection {
         }
     }
 
-    // Extra args go to the last real build/package command, the one that matters.
+    // Extra args go to the last real build step (or package if no build step).
     let extra = split_args(&ctx.opts.extra_args);
     if !extra.is_empty() {
-        if let Some(step) = primary
-            .steps
-            .iter_mut()
-            .rev()
-            .find(|s| s.kind != StepKind::Install)
-        {
-            step.push_args(&extra);
+        if contains_shell_metachars(&ctx.opts.extra_args) {
+            primary.notes.push(Note::warn("Extra arguments contain unsafe shell control characters (&, |, ;, ^, %, <, >) and were rejected."));
+        } else {
+            let step_idx = primary
+                .steps
+                .iter()
+                .rposition(|s| s.kind == StepKind::Build)
+                .or_else(|| primary.steps.iter().rposition(|s| s.kind != StepKind::Install));
+            if let Some(idx) = step_idx {
+                let step = &mut primary.steps[idx];
+                let is_ps_command = match &step.action {
+                    crate::plan::Action::Exec { program, args, .. } => {
+                        program == "powershell" && args.iter().any(|a| a == "-Command")
+                    }
+                };
+                if is_ps_command {
+                    primary.notes.push(Note::warn("Extra arguments cannot be appended to PowerShell -Command steps."));
+                } else {
+                    step.push_args(&extra);
+                }
+            }
         }
     }
 

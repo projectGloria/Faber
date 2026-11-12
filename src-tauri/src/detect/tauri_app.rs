@@ -46,7 +46,7 @@ pub fn detect(ctx: &Ctx) -> Option<Detected> {
     d.tags = std::iter::once("Rust".to_string()).chain(ctx.js_tags()).collect();
     d.tools.push("cargo".into());
 
-    let (pm, cwd) = if has_subfolder_pkg {
+    let (pm, cwd, has_sub_tauri_script, has_sub_tauri_cli) = if has_subfolder_pkg {
         let sub = subfolder.unwrap();
         let sub_ctx = Ctx::new(&ctx.root.join(sub), ctx.opts.clone());
         let pm = sub_ctx.pkg.as_ref().map(|_| PackageManager::detect(&sub_ctx));
@@ -58,7 +58,7 @@ pub fn detect(ctx: &Ctx) -> Option<Detected> {
                 d.steps.push(step);
             }
         }
-        (pm, Some(sub.to_string()))
+        (pm, Some(sub.to_string()), sub_ctx.script("tauri").is_some(), sub_ctx.has_dep("@tauri-apps/cli"))
     } else {
         let pm = ctx.pkg.as_ref().map(|_| PackageManager::detect(ctx));
         if let Some(pm) = pm {
@@ -66,7 +66,7 @@ pub fn detect(ctx: &Ctx) -> Option<Detected> {
             d.tools.insert(0, pm.bin().into());
             d.steps.extend(super::node::install_step(ctx, pm));
         }
-        (pm, None)
+        (pm, None, false, false)
     };
 
     let mut args: Vec<&str> = vec!["build"];
@@ -76,8 +76,8 @@ pub fn detect(ctx: &Ctx) -> Option<Detected> {
         args.extend(["--bundles", "nsis,msi"]);
     }
     let (prog, argv) = match pm {
-        Some(pm) if ctx.script("tauri").is_some() || (has_subfolder_pkg && ctx.read(&format!("{}/package.json", subfolder.unwrap())).is_some_and(|s| s.contains("\"tauri\""))) => pm.run("tauri", &args),
-        Some(pm) if ctx.has_dep("@tauri-apps/cli") || (has_subfolder_pkg && ctx.read(&format!("{}/package.json", subfolder.unwrap())).is_some_and(|s| s.contains("@tauri-apps/cli"))) => pm.exec("tauri", &args),
+        Some(pm) if ctx.script("tauri").is_some() || has_sub_tauri_script => pm.run("tauri", &args),
+        Some(pm) if ctx.has_dep("@tauri-apps/cli") || has_sub_tauri_cli => pm.exec("tauri", &args),
         _ => {
             d.notes.push(Note::warn("No @tauri-apps/cli in package.json, so Faber falls back to `cargo tauri` (needs `cargo install tauri-cli`)."));
             let mut a = vec!["tauri".to_string()];

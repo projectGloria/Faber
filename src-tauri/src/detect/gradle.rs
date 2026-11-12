@@ -24,9 +24,11 @@ pub fn detect(ctx: &Ctx) -> Option<Detected> {
         || ctx.read("app/build.gradle.kts").is_some_and(|s| s.contains("com.android"))
         || ctx.read("app/build.gradle").is_some_and(|s| s.contains("com.android"));
 
-    let is_kotlin = !ctx.glob("**/*.kt").is_empty()
-        || ctx.has("build.gradle.kts")
-        || ctx.has("settings.gradle.kts");
+    let is_kotlin = ctx.has("build.gradle.kts")
+        || ctx.has("settings.gradle.kts")
+        || ctx.has("app/build.gradle.kts")
+        || !ctx.glob("src/**/*.kt").is_empty()
+        || !ctx.glob("app/src/**/*.kt").is_empty();
 
     let mut d = Detected::new(Stack::Gradle, 65);
     if is_android {

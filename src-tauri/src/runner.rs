@@ -35,28 +35,108 @@ pub struct Artifact {
     pub is_dir: bool,
 }
 
+#[cfg(windows)]
+pub struct ProcessJob {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+unsafe impl Send for ProcessJob {}
+#[cfg(windows)]
+unsafe impl Sync for ProcessJob {}
+
+#[cfg(windows)]
+impl ProcessJob {
+    pub fn new() -> Option<Self> {
+        use windows_sys::Win32::System::JobObjects::*;
+        unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let res = SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if res == 0 {
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+                return None;
+            }
+            Some(Self { handle })
+        }
+    }
+
+    pub fn assign(&self, pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+        unsafe {
+            let proc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if !proc.is_null() {
+                let ok = AssignProcessToJobObject(self.handle, proc) != 0;
+                CloseHandle(proc);
+                ok
+            } else {
+                false
+            }
+        }
+    }
+
+    pub fn terminate(&self) {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        unsafe {
+            let _ = TerminateJobObject(self.handle, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessJob {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        unsafe {
+            CloseHandle(self.handle);
+        }
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     running: bool,
     pid: Option<u32>,
     cancelled: bool,
+    #[cfg(windows)]
+    job: Option<std::sync::Arc<ProcessJob>>,
 }
 
 #[derive(Default)]
 pub struct RunState(Mutex<Inner>);
 
 impl RunState {
-    /// Kill the whole process tree. `child.kill()` only kills `npm.cmd`; the node/esbuild/
-    /// cargo grandchildren would keep running and hold file locks on target/ or node_modules.
+    /// Kill the whole process tree using Windows Job Object (falling back to taskkill /T /F).
+    /// `child.kill()` only kills `npm.cmd`; the node/esbuild/cargo grandchildren would keep
+    /// running and hold file locks on target/ or node_modules.
     pub fn cancel(&self) {
-        let pid = {
+        let (pid, job) = {
             let mut g = self.0.lock().unwrap();
             if !g.running {
                 return;
             }
             g.cancelled = true;
-            g.pid.take()
+            #[cfg(windows)]
+            let job = g.job.take();
+            #[cfg(not(windows))]
+            let job: Option<()> = None;
+            (g.pid.take(), job)
         };
+        #[cfg(windows)]
+        if let Some(ref j) = job {
+            j.terminate();
+        }
         if let Some(pid) = pid {
             let mut cmd = std::process::Command::new("taskkill");
             cmd.args(["/T", "/F", "/PID", &pid.to_string()]).stdout(Stdio::null()).stderr(Stdio::null());
@@ -96,11 +176,31 @@ pub async fn run(detection: Detection, state: &RunState, ch: Channel<RunEvent>) 
     run_with_guard(detection, state, guard, ch).await
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileSnapshot {
+    mtime: Option<SystemTime>,
+    len: u64,
+}
+
+fn snapshot_artifacts(root: &Path, patterns: &[String]) -> std::collections::HashMap<PathBuf, FileSnapshot> {
+    let mut map = std::collections::HashMap::new();
+    for pat in patterns {
+        for p in glob_in(root, pat) {
+            if let Ok(meta) = std::fs::metadata(&p) {
+                map.insert(p, FileSnapshot { mtime: meta.modified().ok(), len: meta.len() });
+            }
+        }
+    }
+    map
+}
+
 pub async fn run_with_guard(detection: Detection, state: &RunState, _guard: RunGuard<'_>, ch: Channel<RunEvent>) -> Result<(), String> {
     let root = PathBuf::from(&detection.root);
     let plan = detection.plan.clone();
     let _ = ch.send(RunEvent::Plan { detection });
 
+    // Pre-build snapshot prevents reproducible-timestamp artifacts (SOURCE_DATE_EPOCH, APKs, VSIX) from being missed
+    let pre_snapshot = snapshot_artifacts(&root, &plan.artifacts);
     // Slack for filesystems with coarse mtimes and tools that preserve source timestamps.
     let started_wall = SystemTime::now() - Duration::from_secs(2);
     let started = Instant::now();
@@ -125,9 +225,9 @@ pub async fn run_with_guard(detection: Detection, state: &RunState, _guard: RunG
         }
     }
 
-    let mut items = collect_artifacts(&root, &plan.artifacts, started_wall);
+    let mut items = collect_artifacts(&root, &plan.artifacts, started_wall, Some(&pre_snapshot));
     // UNIX_EPOCH = "any mtime": pinned outputs are current by construction (see BuildPlan::pinned_artifacts).
-    for p in collect_artifacts(&root, &plan.pinned_artifacts, SystemTime::UNIX_EPOCH) {
+    for p in collect_artifacts(&root, &plan.pinned_artifacts, SystemTime::UNIX_EPOCH, None) {
         if !items.iter().any(|i| i.path == p.path) {
             items.push(p);
         }
@@ -171,22 +271,46 @@ async fn exec(
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
+    #[cfg(windows)]
+    let job = ProcessJob::new().map(std::sync::Arc::new);
+
     let mut child = cmd.spawn().map_err(|e| format!("Failed to start `{program}`: {e}"))?;
+    let child_pid = child.id();
+    #[cfg(windows)]
+    if let (Some(j), Some(pid)) = (&job, child_pid) {
+        j.assign(pid);
+    }
+
     {
         let mut g = state.0.lock().unwrap();
         if g.cancelled {
             // Cancel landed between steps: don't let the next step run.
             drop(g);
+            #[cfg(windows)]
+            if let Some(j) = &job {
+                j.terminate();
+            }
             let _ = child.start_kill();
             return Ok(None);
         }
-        g.pid = child.id();
+        g.pid = child_pid;
+        #[cfg(windows)]
+        {
+            g.job = job.clone();
+        }
     }
 
     let out = tokio::spawn(pump(child.stdout.take().unwrap(), id.to_string(), ch.clone()));
     let err = tokio::spawn(pump(child.stderr.take().unwrap(), id.to_string(), ch.clone()));
     let status = child.wait().await.map_err(|e| e.to_string())?;
-    state.0.lock().unwrap().pid = None;
+    {
+        let mut g = state.0.lock().unwrap();
+        g.pid = None;
+        #[cfg(windows)]
+        {
+            g.job = None;
+        }
+    }
 
     // A daemon the build spawned (turbo, gradle...) can inherit our pipe handles and keep them open
     // forever after the main process exits, so give the readers a short grace period then move on.
@@ -202,17 +326,46 @@ async fn exec(
     Ok(status.code())
 }
 
-/// Forward raw chunks (not lines): progress bars redraw with `\r` and never emit `\n`, so
-/// line-buffering would freeze them. The carry buffer keeps multi-byte UTF-8 chars split
-/// across reads from turning into U+FFFD.
+/// Forward raw chunks buffered at 16ms / 32KB to avoid flooding the webview IPC channel.
+/// The carry buffer keeps multi-byte UTF-8 chars split across reads from turning into U+FFFD.
 async fn pump<R: AsyncRead + Unpin>(mut r: R, id: String, ch: Channel<RunEvent>) {
     let mut buf = vec![0u8; 16 * 1024];
     let mut carry: Vec<u8> = Vec::new();
+    let mut pending = String::with_capacity(32 * 1024);
+    let mut last_flush = tokio::time::Instant::now();
+
     loop {
-        let n = match r.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
+        let n = if !pending.is_empty() {
+            let elapsed = last_flush.elapsed();
+            if elapsed >= Duration::from_millis(16) {
+                let _ = ch.send(RunEvent::Output { id: id.clone(), data: std::mem::take(&mut pending) });
+                last_flush = tokio::time::Instant::now();
+                match r.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                }
+            } else {
+                let timeout_dur = Duration::from_millis(16) - elapsed;
+                match tokio::time::timeout(timeout_dur, r.read(&mut buf)).await {
+                    Ok(Ok(0)) | Ok(Err(_)) => break,
+                    Ok(Ok(n)) => n,
+                    Err(_) => {
+                        let _ = ch.send(RunEvent::Output { id: id.clone(), data: std::mem::take(&mut pending) });
+                        last_flush = tokio::time::Instant::now();
+                        match r.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => n,
+                        }
+                    }
+                }
+            }
+        } else {
+            match r.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            }
         };
+
         carry.extend_from_slice(&buf[..n]);
         let cut = match std::str::from_utf8(&carry) {
             Ok(_) => carry.len(),
@@ -220,23 +373,46 @@ async fn pump<R: AsyncRead + Unpin>(mut r: R, id: String, ch: Channel<RunEvent>)
             Err(_) => carry.len(), // genuinely invalid (OEM codepage output): flush lossy
         };
         if cut > 0 {
-            let data = String::from_utf8_lossy(&carry[..cut]).into_owned();
+            pending.push_str(&String::from_utf8_lossy(&carry[..cut]));
             carry.drain(..cut);
-            let _ = ch.send(RunEvent::Output { id: id.clone(), data });
+            if pending.len() >= 32 * 1024 || last_flush.elapsed() >= Duration::from_millis(16) {
+                let _ = ch.send(RunEvent::Output { id: id.clone(), data: std::mem::take(&mut pending) });
+                last_flush = tokio::time::Instant::now();
+            }
         }
     }
     if !carry.is_empty() {
-        let _ = ch.send(RunEvent::Output { id, data: String::from_utf8_lossy(&carry).into_owned() });
+        pending.push_str(&String::from_utf8_lossy(&carry));
+    }
+    if !pending.is_empty() {
+        let _ = ch.send(RunEvent::Output { id, data: pending });
     }
 }
 
-fn collect_artifacts(root: &Path, patterns: &[String], since: SystemTime) -> Vec<Artifact> {
+fn collect_artifacts(
+    root: &Path,
+    patterns: &[String],
+    since: SystemTime,
+    pre_snapshot: Option<&std::collections::HashMap<PathBuf, FileSnapshot>>,
+) -> Vec<Artifact> {
     let mut seen = std::collections::HashSet::new();
     let mut items = vec![];
     for pat in patterns {
         for p in glob_in(root, pat) {
-            let fresh = crate::detect::mtime(&p).is_some_and(|m| m >= since);
-            if !fresh || !seen.insert(p.clone()) {
+            let is_fresh = if let Some(snap) = pre_snapshot {
+                match snap.get(&p) {
+                    None => true, // new file created by the build
+                    Some(prev) => {
+                        let cur_meta = std::fs::metadata(&p).ok();
+                        let cur_len = cur_meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                        let cur_mtime = cur_meta.as_ref().and_then(|m| m.modified().ok());
+                        cur_len != prev.len || cur_mtime != prev.mtime || cur_mtime.is_some_and(|m| m >= since)
+                    }
+                }
+            } else {
+                crate::detect::mtime(&p).is_some_and(|m| m >= since)
+            };
+            if !is_fresh || !seen.insert(p.clone()) {
                 continue;
             }
             let is_dir = p.is_dir();

@@ -420,6 +420,58 @@ fn script_in_subfolder_with_variations() {
     assert!(c[0].starts_with("powershell -NoProfile -ExecutionPolicy Bypass -File installer\\build.ps1"));
 }
 
+#[test]
+fn cargo_detects_when_src_tauri_is_invalid() {
+    let t = tempfile::tempdir().unwrap();
+    // Incomplete tauri checkout: src-tauri exists, but has no tauri.conf.json or Tauri.toml
+    write(t.path(), "Cargo.toml", "[package]\nname = \"my-core-crate\"\nversion = \"0.1.0\"\n");
+    write(t.path(), "src-tauri/dummy.txt", "");
+
+    let d = detect(t.path(), opts());
+    // Must fall back to Cargo rather than returning None
+    assert_eq!(d.stack, Some(Stack::Cargo));
+    assert_eq!(commands(&d), vec!["cargo build --release"]);
+}
+
+#[test]
+fn extra_args_reject_cmd_chaining() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "build.bat", "@echo off\r\n");
+    let d = detect(t.path(), Options {
+        extra_args: "& calc.exe".into(),
+        ..opts()
+    });
+    // Ensure dangerous shell operators are stripped or rejected
+    for step in &d.plan.steps {
+        assert!(!step.command.contains("& calc.exe"), "Command should not allow chaining");
+    }
+}
+
+#[test]
+fn tauri_subfolder_pkg_without_script_calls_exec() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "app/package.json", r#"{"dependencies":{"@tauri-apps/api":"^2.0.0"}}"#);
+    write(t.path(), "app/src-tauri/tauri.conf.json", r#"{"productName":"App"}"#);
+    write(t.path(), "app/src-tauri/Cargo.toml", "[package]\nname = \"app\"\n");
+
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Tauri));
+    // Should NOT call "npm run tauri" when "tauri" script is missing
+    let cmd = &commands(&d)[0];
+    assert!(!cmd.starts_with("npm run tauri"), "Command was {cmd}");
+}
+
+#[test]
+fn dotnet_solution_with_deep_projects_does_not_panic() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "App.sln", "Microsoft Visual Studio Solution File");
+    write(t.path(), "src/A/B/C/D/Project.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>");
+
+    let d = detect(t.path(), opts());
+    assert_eq!(d.stack, Some(Stack::Dotnet));
+    assert!(commands(&d)[0].contains("App.sln"));
+}
+
 /// Dry run over the real projects next to Faber: `cargo test real_projects -- --ignored --nocapture`.
 #[test]
 #[ignore]

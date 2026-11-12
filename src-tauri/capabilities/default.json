@@ -9,7 +9,6 @@
     "dialog:allow-ask",
     "store:default",
     "opener:allow-reveal-item-in-dir",
-    "opener:allow-open-path",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",

@@ -5,14 +5,17 @@ use crate::plan::{Step, StepKind, sv};
 use crate::toolchain;
 
 pub fn detect(ctx: &Ctx) -> Option<Detected> {
+    if !ctx.has("Cargo.toml") {
+        return None;
+    }
     let has_tauri = ctx.has("src-tauri")
         || ctx.has("app/src-tauri")
         || ctx.has("desktop/src-tauri")
         || ctx.has("client/src-tauri");
-    if !ctx.has("Cargo.toml") || has_tauri {
-        return None;
-    }
-    let mut d = Detected::new(Stack::Cargo, 55);
+    // If a tauri directory exists, lower cargo's priority so valid Tauri projects claim it,
+    // but broken/incomplete Tauri checkouts still fall back to Cargo as primary or alternative.
+    let priority = if has_tauri { 35 } else { 55 };
+    let mut d = Detected::new(Stack::Cargo, priority);
     d.tags = vec!["Rust".into()];
     d.tools = vec!["cargo".into()];
     d.steps.push(Step::exec(StepKind::Build, "cargo build --release", "cargo", sv(&["build", "--release"])));

@@ -6,7 +6,11 @@ use tauri::State;
 use tauri::ipc::Channel;
 
 fn root(path: &str) -> Result<PathBuf, String> {
-    let p = PathBuf::from(path);
+    let mut p = PathBuf::from(path);
+    if p.is_file()
+        && let Some(parent) = p.parent() {
+        p = parent.to_path_buf();
+    }
     if !p.is_dir() {
         return Err(format!("Not a folder: {path}"));
     }
@@ -57,4 +61,31 @@ pub async fn clean_project(path: String, options: Options, state: State<'_, RunS
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// Reveal or open an artifact folder in the native file explorer without running executables.
+#[tauri::command]
+pub async fn reveal_artifact(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("File does not exist: {path}"));
+    }
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new("explorer");
+        if p.is_dir() {
+            cmd.arg(&p);
+        } else {
+            cmd.args(["/select,", &p.to_string_lossy()]);
+        }
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd.spawn().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Unsupported platform".into())
+    }
 }

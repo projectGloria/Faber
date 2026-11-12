@@ -36,6 +36,10 @@ export default function App() {
         if (!alive) return;
         setDetection(d);
         setDetectError(null);
+        if (d.root && d.root !== path) {
+          setPath(d.root);
+        }
+        prefs.pushRecent(d.root || path);
       })
       .catch((e) => alive && setDetectError(String(e)));
     return () => {
@@ -52,7 +56,6 @@ export default function App() {
     setDetectError(null);
     reset();
     termRef.current?.clear();
-    prefs.pushRecent(p);
   }
 
   async function pickFolder() {

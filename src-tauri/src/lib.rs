@@ -18,7 +18,8 @@ pub fn run() {
             commands::detect_project,
             commands::run_build,
             commands::cancel_build,
-            commands::clean_project
+            commands::clean_project,
+            commands::reveal_artifact
         ])
         .on_window_event(|window, event| {
             // Closing Faber mid-build must not leave an orphaned cargo/node tree holding locks.

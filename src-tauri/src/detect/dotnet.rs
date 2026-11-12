@@ -41,31 +41,46 @@ pub fn detect(ctx: &Ctx) -> Option<Detected> {
     d.tags = vec![".NET".into()];
     d.tools = vec!["dotnet".into()];
     // One csproj, so publish it directly; otherwise let the solution decide.
-    let target = if csprojs.len() == 1 { rel(&csprojs[0]) } else { slns.first().map(rel).unwrap_or_else(|| rel(&csprojs[0])) };
+    let target = if csprojs.len() == 1 {
+        rel(&csprojs[0])
+    } else if let Some(sln) = slns.first() {
+        rel(sln)
+    } else if let Some(first_proj) = csprojs.first() {
+        rel(first_proj)
+    } else {
+        String::new()
+    };
 
     let has_assets = ctx.has("obj/project.assets.json") || !ctx.glob("*/obj/project.assets.json").is_empty();
     if !ctx.opts.skip_install && (ctx.opts.force_install || !has_assets) {
+        let mut restore_args = vec!["restore".into()];
+        if !target.is_empty() {
+            restore_args.push(target.clone());
+        }
         d.steps.push(
-            Step::exec(StepKind::Install, "dotnet restore", "dotnet", vec!["restore".into(), target.clone()])
+            Step::exec(StepKind::Install, "dotnet restore", "dotnet", restore_args)
                 .reason("NuGet packages aren't restored yet (project.assets.json missing)"),
         );
     }
     // Framework-dependent single file: small exe, uses the runtime already on this machine.
+    let mut publish_args = vec!["publish".into()];
+    if !target.is_empty() {
+        publish_args.push(target);
+    }
+    publish_args.extend(sv(&[
+        "-c",
+        "Release",
+        "-r",
+        "win-x64",
+        "--self-contained",
+        "false",
+        "-p:PublishSingleFile=true",
+    ]));
     d.steps.push(Step::exec(
         StepKind::Build,
         "dotnet publish (single-file)",
         "dotnet",
-        vec![
-            "publish".into(),
-            target,
-            "-c".into(),
-            "Release".into(),
-            "-r".into(),
-            "win-x64".into(),
-            "--self-contained".into(),
-            "false".into(),
-            "-p:PublishSingleFile=true".into(),
-        ],
+        publish_args,
     ));
     // No `-o`: the SDK's native layout is bin/Release/<tfm>/<rid>/publish (per project for a .sln).
     d.artifacts = sv(&["bin/Release/*/win-x64/publish/*.exe", "*/bin/Release/*/win-x64/publish/*.exe"]);

@@ -17,7 +17,13 @@ export function usePrefs() {
     Promise.all([store.get<string[]>("recents"), store.get<Record<string, Options>>("overrides")]).then(([r, o]) => {
       if (!alive) return;
       setRecents(r ?? []);
-      setOverrides(o ?? {});
+      const normalizedOverrides: Record<string, Options> = {};
+      if (o) {
+        for (const [k, v] of Object.entries(o)) {
+          normalizedOverrides[k.toLowerCase()] = v;
+        }
+      }
+      setOverrides(normalizedOverrides);
       setLoaded(true);
     });
     return () => {
@@ -45,10 +51,10 @@ export function usePrefs() {
   }, []);
 
   const setOptionsFor = useCallback((path: string, opts: Options) => {
-    setOverrides((prev) => ({ ...prev, [path]: opts }));
+    setOverrides((prev) => ({ ...prev, [path.toLowerCase()]: opts }));
   }, []);
 
-  const optionsFor = useCallback((path: string): Options => ({ ...DEFAULT_OPTIONS, ...overrides[path] }), [overrides]);
+  const optionsFor = useCallback((path: string): Options => ({ ...DEFAULT_OPTIONS, ...overrides[path.toLowerCase()] }), [overrides]);
 
   return { loaded, recents, pushRecent, removeRecent, optionsFor, setOptionsFor };
 }

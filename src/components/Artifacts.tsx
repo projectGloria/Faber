@@ -1,4 +1,4 @@
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 import type { Artifact } from "../lib/api";
 import { formatBytes } from "../lib/format";
 
@@ -15,7 +15,7 @@ export function Artifacts({ items }: { items: Artifact[] }) {
               <div className="artifact-name" title={a.path}>{a.name}</div>
               <div className="muted small">{formatBytes(a.size)}{a.isDir ? " · folder" : ""}</div>
             </div>
-            <button className="btn btn-ghost small" onClick={() => (a.isDir ? openPath(a.path) : revealItemInDir(a.path))}>
+            <button className="btn btn-ghost small" onClick={() => invoke("reveal_artifact", { path: a.path })}>
               {a.isDir ? "Open" : "Show"}
             </button>
           </li>

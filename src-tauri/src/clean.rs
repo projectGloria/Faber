@@ -51,7 +51,12 @@ pub fn remove(root: &Path, patterns: &[String]) -> CleanReport {
     let mut report = CleanReport::default();
     for p in resolve(root, patterns) {
         let path = rel(root, &p);
-        match std::fs::remove_dir_all(&p) {
+        let res = if p.is_dir() {
+            std::fs::remove_dir_all(&p)
+        } else {
+            std::fs::remove_file(&p)
+        };
+        match res {
             Ok(()) => report.removed.push(path),
             // Typical cause: the built exe is still running, or an editor/AV holds a handle.
             Err(e) => report.failed.push(CleanFailure { path, error: e.to_string() }),
@@ -64,7 +69,7 @@ fn is_safe(root: &Path, p: &Path) -> bool {
     // symlink_metadata, not metadata: a symlink/junction (pnpm, `npm link`) must never be followed
     // out of the project. std reports Windows junctions as symlinks too.
     let Ok(meta) = std::fs::symlink_metadata(p) else { return false };
-    if !meta.is_dir() || meta.file_type().is_symlink() {
+    if meta.file_type().is_symlink() {
         return false;
     }
     // strip_prefix is lexical, so `root/../x` would pass; requiring plain Normal components rejects
@@ -97,13 +102,27 @@ mod tests {
     }
 
     #[test]
-    fn resolves_only_existing_dirs_and_collapses_nested() {
+    fn resolves_existing_targets_and_collapses_nested() {
         let t = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(t.path()).unwrap();
         mk(&root, "target/release");
         fs::write(root.join("dist"), b"a file, not a dir").unwrap();
         let got: Vec<String> = resolve(&root, &pats(&["target/release", "target", "dist", "out"])).iter().map(|p| rel(&root, p)).collect();
-        assert_eq!(got, vec!["target"]);
+        assert_eq!(got, vec!["target", "dist"]);
+    }
+
+    #[test]
+    fn clean_resolves_and_removes_single_files() {
+        let t = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(t.path()).unwrap();
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let exe = bin_dir.join("app.exe");
+        fs::write(&exe, b"MZ").unwrap();
+
+        let r = remove(&root, &pats(&["bin/app.exe"]));
+        assert_eq!(r.removed, vec!["bin/app.exe"]);
+        assert!(!exe.exists());
     }
 
     #[test]
