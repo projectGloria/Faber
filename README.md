@@ -43,3 +43,17 @@ cd src-tauri
 cargo test                                         # detectors + runner (spawn, stream, fail, cancel tree-kill)
 cargo test real_projects -- --ignored --nocapture  # dry-run detection over every sibling project
 ```
+
+## How to release
+
+1. Bump the version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`, then commit your changes.
+2. Tag the release and push the tag:
+
+```bash
+git tag v1.0.0 && git push --tags
+```
+
+GitHub Actions (`.github/workflows/build-installers.yml`) automatically builds the Windows NSIS (`.exe`) and MSI (`.msi`) installers, uploads them as the `installers` workflow artifact, and publishes a GitHub Release with the installers attached.
+
+- **Tagged releases**: Download the installers from the repository's **Releases** page (`https://github.com/projectGloria/Faber/releases`).
+- **Manual builds**: Trigger **Build Installers** via `workflow_dispatch` in the **Actions** tab and download the `installers` artifact from the workflow run.

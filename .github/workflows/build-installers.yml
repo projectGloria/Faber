@@ -1,0 +1,107 @@
+name: Build Installers
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows Installers
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Ensure latest stable Rust toolchain
+        shell: pwsh
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Cache Cargo dependencies and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri installers (NSIS & MSI)
+        run: npm run tauri build
+
+      - name: Collect and rename installers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $version = '${{ github.ref_name }}' -replace '^v', ''
+          } else {
+            $conf = Get-Content -Raw 'src-tauri/tauri.conf.json' | ConvertFrom-Json
+            $version = $conf.version
+          }
+
+          $outDir = 'installers'
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          $nsis = Get-ChildItem -Path 'src-tauri/target/release/bundle/nsis' -Filter '*.exe' | Select-Object -First 1
+          if (-not $nsis) {
+            throw 'NSIS installer (.exe) not found in src-tauri/target/release/bundle/nsis'
+          }
+          Copy-Item -Path $nsis.FullName -Destination (Join-Path $outDir "faber-$version-windows-x64.exe")
+
+          $msi = Get-ChildItem -Path 'src-tauri/target/release/bundle/msi' -Filter '*.msi' | Select-Object -First 1
+          if (-not $msi) {
+            throw 'MSI installer (.msi) not found in src-tauri/target/release/bundle/msi'
+          }
+          Copy-Item -Path $msi.FullName -Destination (Join-Path $outDir "faber-$version-windows-x64.msi")
+
+          Get-ChildItem -Path $outDir
+
+      - name: Upload installers artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers
+          path: installers/*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download installers artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: installers
+          path: installers
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installers/*
+          generate_release_notes: true
