@@ -1,0 +1,8 @@
+id = "Faber"
+name = "Faber"
+version = "0.3.0"
+main_exe = "faber.exe"
+icon = "src-tauri/icons/icon.ico"
+accent = "#f59e0b"
+description = "Detect a project's stack and build it in one click"
+data_folders = ['%APPDATA%\dev.nihil.faber', '%LOCALAPPDATA%\dev.nihil.faber']

@@ -1,0 +1,179 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify installer without publishing a GitHub Release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Check release version
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GLORIA_VER=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' gloria.toml | head -n 1)
+          PKG_VER=$(node -p "require('./package.json').version")
+          CARGO_VER=$(sed -nE '/^\[package\]/,/^\[/s/^version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' src-tauri/Cargo.toml | head -n 1)
+          TAURI_VER=$(node -p "require('./src-tauri/tauri.conf.json').version")
+
+          if [ -z "$GLORIA_VER" ]; then
+            echo "Could not read version from gloria.toml" >&2
+            exit 1
+          fi
+
+          if [ "$GLORIA_VER" != "$PKG_VER" ] || [ "$GLORIA_VER" != "$CARGO_VER" ] || [ "$GLORIA_VER" != "$TAURI_VER" ]; then
+            echo "Version mismatch: gloria.toml=$GLORIA_VER package.json=$PKG_VER Cargo.toml=$CARGO_VER tauri.conf.json=$TAURI_VER" >&2
+            exit 1
+          fi
+
+          echo "version=$GLORIA_VER" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          PREV_VER=""
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            PREV_VER=$(git show "${BEFORE}:gloria.toml" 2>/dev/null | sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' | head -n 1 || true)
+          fi
+
+          if [ "$GLORIA_VER" != "$PREV_VER" ]; then
+            echo "Version changed ($PREV_VER -> $GLORIA_VER); triggering build."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version unchanged ($GLORIA_VER); skipping release build."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    runs-on: windows-latest
+    needs: version
+    if: needs.version.outputs.build == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install frontend dependencies and build
+        shell: pwsh
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run Rust tests and build release binary
+        shell: pwsh
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          cargo build --manifest-path src-tauri/Cargo.toml --release --locked
+
+      - name: Stage application payload
+        shell: pwsh
+        run: |
+          $stage = "app-dist"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "src-tauri/target/release/faber.exe" -Destination $stage
+
+      - name: Pack installer with GloriaSetup
+        shell: pwsh
+        run: |
+          npx --yes gloria-setup@0.2.4 --app app-dist --manifest gloria.toml --version ${{ needs.version.outputs.version }} --out dist
+
+      - name: Verify installer with silent dry-run
+        shell: pwsh
+        run: |
+          $setup = "dist\Faber_${{ needs.version.outputs.version }}_x64-setup.exe"
+          if (-not (Test-Path $setup)) { throw "Expected installer not found: $setup" }
+          $proc = Start-Process -FilePath $setup -ArgumentList '/S --dry-run' -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "GloriaSetup dry-run failed with exit code $($proc.ExitCode)" }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: faber-windows-installer
+          path: dist/Faber_${{ needs.version.outputs.version }}_x64-setup.exe
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [version, build]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || !inputs.dry_run)
+    permissions:
+      contents: write
+    steps:
+      - name: Download installer artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faber-windows-installer
+          path: release-assets
+
+      - name: Generate SHA256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum *_x64-setup.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create, verify, and publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          EXTRA_ARGS=()
+          if [[ "$VERSION" == *-* ]]; then
+            EXTRA_ARGS+=(--prerelease)
+          fi
+
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Faber ${TAG}" \
+            --generate-notes \
+            --draft \
+            "${EXTRA_ARGS[@]}" \
+            release-assets/*_x64-setup.exe \
+            release-assets/SHA256SUMS.txt
+
+          VERIFY_DIR=$(mktemp -d)
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --dir "$VERIFY_DIR" \
+            --pattern "*_x64-setup.exe" \
+            --pattern "SHA256SUMS.txt"
+
+          (cd "$VERIFY_DIR" && sha256sum --check SHA256SUMS.txt)
+
+          gh release edit "$TAG" \
+            --repo "${{ github.repository }}" \
+            --draft=false

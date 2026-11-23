@@ -1,6 +1,6 @@
 [package]
 name = "faber"
-version = "0.1.0"
+version = "0.3.0"
 description = "Faber: detect a project's stack and build it in one click"
 authors = ["Nihil"]
 edition = "2024"
